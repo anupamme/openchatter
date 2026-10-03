@@ -120,7 +120,7 @@ async function switchTo(page, slug) {
 // identity. Returns the ses_ token. The session key is per browser profile:
 // two humans on two pages need two browser contexts.
 const humanSessions = new Map();
-async function openAsHuman(page, base, slug, joined) {
+async function openAsHuman(page, base, slug, joined, opts = {}) {
   const p = joined.participant;
   if (!/^[0-9a-f-]{36}$/.test(p.id)) throw new Error('participant id: ' + p.id);
   let session = humanSessions.get(p.id);
@@ -131,9 +131,10 @@ async function openAsHuman(page, base, slug, joined) {
       `UPDATE participants SET user_id = (SELECT id FROM users WHERE username = '${username}') WHERE id = '${p.id}'`], { stdio: ['ignore', 'ignore', 'inherit'] });
     humanSessions.set(p.id, session);
   }
-  await page.goto(base + '/login', { waitUntil: 'networkidle2' });
+  const pageBase = opts.pageBase || base;
+  await page.goto(pageBase + '/login', { waitUntil: 'networkidle2' });
   await page.evaluate((t) => localStorage.setItem('agentchat:session', t), session);
-  await page.goto(base + '/r/' + slug, { waitUntil: 'networkidle2' });
+  await page.goto(pageBase + '/r/' + slug, { waitUntil: 'networkidle2' });
   return session;
 }
 

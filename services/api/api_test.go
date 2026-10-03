@@ -321,6 +321,70 @@ func TestFullFlow(t *testing.T) {
 	alice.must("POST", "/api/v1/channels/deploys/messages", map[string]any{"body": "nope"}, 409)
 }
 
+// Archived public channels leave the active sidebar in the web client, but the
+// browse snapshot must retain them (and their membership flag) so a member can
+// still discover and open the read-only history.
+func TestArchivedChannelsStayBrowsable(t *testing.T) {
+	srv, _ := newTestServer(t)
+	_, alice, bob := setupRoom(t, srv.URL)
+
+	byoa := alice.must("POST", "/api/v1/channels", map[string]any{"name": "byoa", "topic": "bring your own agent"}, 201)
+	slack := alice.must("POST", "/api/v1/channels", map[string]any{"name": "slack", "topic": "old bridge"}, 201)
+	alice.must("POST", "/api/v1/channels/byoa/messages", map[string]any{"body": "byoa history"}, 201)
+	alice.must("POST", "/api/v1/channels/slack/messages", map[string]any{"body": "slack history"}, 201)
+	alice.must("PATCH", "/api/v1/channels/byoa", map[string]any{"archived": true}, 200)
+	alice.must("PATCH", "/api/v1/channels/slack", map[string]any{"archived": true}, 200)
+
+	// The member-scoped channel snapshot still carries archived channels. The
+	// web app needs these records for direct URLs, Browse and channel search;
+	// only its active sidebar filters them out.
+	wantIDs := map[string]string{"byoa": byoa["id"].(string), "slack": slack["id"].(string)}
+	listed := map[string]bool{}
+	for _, raw := range alice.must("GET", "/api/v1/channels", nil, 200)["channels"].([]any) {
+		ch := raw.(map[string]any)
+		if _, ok := wantIDs[ch["name"].(string)]; ok {
+			listed[ch["name"].(string)] = ch["archived"].(bool)
+		}
+	}
+	if !listed["byoa"] || !listed["slack"] {
+		t.Fatalf("member channel snapshot lost archived channels: %v", listed)
+	}
+
+	assertBrowse := func(c *testClient, member bool) {
+		t.Helper()
+		found := map[string]bool{}
+		seenArchived := false
+		for _, raw := range c.must("GET", "/api/v1/channels/browse", nil, 200)["channels"].([]any) {
+			ch := raw.(map[string]any)
+			if ch["archived"].(bool) {
+				seenArchived = true
+			}
+			name := ch["name"].(string)
+			if _, ok := wantIDs[name]; !ok {
+				if seenArchived && !ch["archived"].(bool) {
+					t.Fatalf("active channel %q sorted below archived channels", name)
+				}
+				continue
+			}
+			if !ch["archived"].(bool) || ch["member"].(bool) != member {
+				t.Fatalf("browse %s = %v, want archived/member=%v", name, ch, member)
+			}
+			found[name] = true
+		}
+		if !found["byoa"] || !found["slack"] {
+			t.Fatalf("browse lost archived channels: %v", found)
+		}
+	}
+	assertBrowse(alice, true)
+	assertBrowse(bob, false)
+
+	// Existing members retain read-only history. A non-member still cannot join
+	// after archival; discovery does not weaken the channel content boundary.
+	alice.must("GET", "/api/v1/channels/byoa/messages", nil, 200)
+	alice.must("GET", "/api/v1/channels/slack/messages", nil, 200)
+	bob.must("POST", "/api/v1/channels/byoa/join", nil, 409)
+}
+
 // A broadcast must be visible in the message body. The legacy request flag
 // used to let clients silently fan a plain message out to the whole channel.
 func TestBroadcastRequiresVisibleBodyMention(t *testing.T) {

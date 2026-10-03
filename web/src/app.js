@@ -1186,7 +1186,7 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
 
     // the default section: a real header like any other, but it cannot be
     // renamed or deleted, and it is also the drop target for leaving a section
-    const members0 = defaultMembers();
+    const members0 = defaultMembers().filter((ch) => !ch.archived);
     const head0 = document.createElement('li');
     head0.className = 'section-header default-section' + (defaultCollapsed ? ' collapsed' : '');
     head0.innerHTML = `<span class="sec-chevron">${defaultCollapsed ? ICON.chevronRight : ICON.chevronDown}</span><span class="sec-name">Channels</span>`;
@@ -1202,13 +1202,18 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
       }
     }
     head0.onclick = () => toggleDefaultSection();
-    makeDropZone(head0, null, () => members0.length);
+    // The persisted default order still contains archived channels. A header
+    // drop means "append" to that full order, not merely after its visible
+    // rows, otherwise an archived id shifts the dropped row above a visible
+    // channel on the next render.
+    makeDropZone(head0, null, () => defaultMembers().length);
     ul.appendChild(head0);
     if (!defaultCollapsed) members0.forEach((ch) => appendChannel(ul, ch, null));
 
     // then each personal section, in order
     groups.forEach((g) => {
-      const members = (g.channel_ids || []).map((cid) => channels.find((c) => c.id === cid)).filter(Boolean);
+      const members = (g.channel_ids || []).map((cid) => channels.find((c) => c.id === cid))
+        .filter((ch) => ch && !ch.archived);
       const header = document.createElement('li');
       header.className = 'section-header' + (g.collapsed ? ' collapsed' : '');
       // a collapsed section rolls up its members' attention: glow on any unread,
@@ -1716,7 +1721,8 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
     if (e === active()) publicChannels = e.publicChannels;
     return true;
   };
-  const linkableChannels = () => channels.filter((c) => !c.archived).concat(publicChannels);
+  const linkableChannels = () => channels.filter((c) => !c.archived)
+    .concat(publicChannels.filter((c) => !c.archived));
 
   // the workspace, its sidebar sections and browse list, into the entry; no DOM
   const loadRoomInto = async (e) => {
@@ -2747,8 +2753,9 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
   // ---------- switching (task 23) ----------
 
   const pickChannel = (e, chName) => e.channels.find((c) => c.name === chName)
-    || (e.lastChannelID && e.channels.find((c) => c.id === e.lastChannelID))
-    || e.channels.find((c) => c.name === 'general') || e.channels[0];
+    || (e.lastChannelID && e.channels.find((c) => c.id === e.lastChannelID && !c.archived))
+    || e.channels.find((c) => c.name === 'general' && !c.archived)
+    || e.channels.find((c) => !c.archived);
   const warmChannel = async (e, ch) => {
     const [page, members] = await Promise.all([
       pageFor(e, ch.id) ? null : api(`/api/v1/channels/${ch.id}/messages?limit=100`, { ws: e.slug }),
@@ -3303,7 +3310,8 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
   // what "#" completes to: your channels first, then public ones you could join
   const channelOptions = () => channels.filter((c) => !c.archived)
     .map((c) => ({ name: c.name, private: !!c.private, topic: c.topic }))
-    .concat(publicChannels.map((c) => ({ name: c.name, private: false, topic: 'not joined' })));
+    .concat(publicChannels.filter((c) => !c.archived)
+      .map((c) => ({ name: c.name, private: false, topic: 'not joined' })));
 
   // a #channel link: open it, joining first when it is public and you are not in
   const goToChannel = async (name) => {
@@ -3330,7 +3338,8 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
     getMeName: () => (me ? me.name : ''),
     getChannelOptions: channelOptions,
     slashCommands: SLASH_COMMANDS,
-    browseChannels: async () => ((await api('/api/v1/channels/browse')).channels || []).filter((c) => !c.member),
+    browseChannels: async () => ((await api('/api/v1/channels/browse')).channels || [])
+      .filter((c) => !c.member && !c.archived),
     onImageFile: (f) => uploadPending('main', new File([f], f.name || 'pasted-image.png', { type: f.type })),
   });
   const threadBox = createComposer({
@@ -3342,7 +3351,8 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
     getMeName: () => (me ? me.name : ''),
     getChannelOptions: channelOptions,
     slashCommands: SLASH_COMMANDS,
-    browseChannels: async () => ((await api('/api/v1/channels/browse')).channels || []).filter((c) => !c.member),
+    browseChannels: async () => ((await api('/api/v1/channels/browse')).channels || [])
+      .filter((c) => !c.member && !c.archived),
     onImageFile: (f) => uploadPending('thread', new File([f], f.name || 'pasted-image.png', { type: f.type })),
   });
   syncEmpty($('composer'), composerBox)(); syncEmpty($('thread-composer'), threadBox)();
@@ -3389,7 +3399,7 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
         const name = arg.replace(/^#/, '');
         if (!name) return fail('Usage: /join channel');
         const out = await api('/api/v1/channels/browse');
-        const ch = (out.channels || []).find((c) => c.name === name);
+        const ch = (out.channels || []).find((c) => c.name === name && !c.archived);
         if (!ch) return fail('No public channel "' + name + '" to join.');
         await api('/api/v1/channels/' + ch.id + '/join', { method: 'POST' });
         await refreshRoom();
@@ -3657,6 +3667,62 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
     return p.toString();
   };
 
+  // The sidebar intentionally hides archived channels, so search has to use
+  // the full member snapshot plus the public Browse map. Member records win
+  // the de-duplication because they carry the fields needed to open history.
+  const discoverableChannels = () => {
+    const found = new Map(publicChannels.map((c) => [c.id, c]));
+    channels.forEach((c) => found.set(c.id, Object.assign({}, c, { member: true })));
+    return [...found.values()];
+  };
+  const channelSearchMatches = (query) => {
+    const needle = query.trim().replace(/^#/, '').toLowerCase();
+    if (!needle || /\s/.test(needle)) return [];
+    return discoverableChannels()
+      .filter((c) => c.name.toLowerCase().includes(needle))
+      .sort((a, b) => Number(b.name.toLowerCase() === needle) - Number(a.name.toLowerCase() === needle)
+        || Number(a.archived) - Number(b.archived) || a.name.localeCompare(b.name));
+  };
+
+  const openDiscoveredChannel = async (ch) => {
+    const mine = channels.find((c) => c.id === ch.id);
+    if (mine) {
+      closeSearch();
+      await selectChannel(mine);
+      return;
+    }
+    if (ch.archived) {
+      notice('Only existing members can open archived #' + ch.name + '.', true);
+      return;
+    }
+    try {
+      await api('/api/v1/channels/' + ch.id + '/join', { method: 'POST' });
+      await refreshRoom();
+      const joined = channels.find((c) => c.id === ch.id);
+      if (joined) { closeSearch(); await selectChannel(joined); }
+    } catch (e) { failToast(e, { prefix: 'Could not join #' + ch.name }); }
+  };
+
+  const searchChannelRow = (ch) => {
+    const row = document.createElement('div');
+    row.className = 'search-channel-row' + (ch.archived ? ' archived' : '');
+    row.dataset.channelId = ch.id;
+    row.innerHTML = `<span class="sc-sigil">${ch.private ? ICON.lock : ICON.hash}</span>` +
+      `<span class="sc-main"><span class="sc-line"><span class="sc-name">#${esc(ch.name)}</span>` +
+      (ch.archived ? '<span class="archived-mark">archived</span>' : '') +
+      `</span><span class="sc-topic">${esc(ch.topic || '')}</span></span>` +
+      (!ch.member && ch.archived ? '<span class="sc-note">not a member</span>' : '');
+    row.onclick = () => openDiscoveredChannel(ch);
+    return row;
+  };
+
+  const searchSectionLabel = (text) => {
+    const el = document.createElement('div');
+    el.className = 'search-section-label';
+    el.textContent = text;
+    return el;
+  };
+
   // One request, one ranked list: the server fuses the text leg and the
   // semantic leg (when it has an embedder) and tags semantic-only rows.
   const runSearch = () => {
@@ -3670,7 +3736,7 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
       if (hasFilters()) box.appendChild(searchNote('search-empty', 'Type something to search within these filters.'));
       return;
     }
-    const state = { seq, rows: 'pending', semantic: true, expanded: false };
+    const state = { seq, rows: 'pending', channels: channelSearchMatches(q), semantic: true, expanded: false };
     paintSearch(state);
     lastSearchURL = '/api/v1/search/hybrid?' + searchParams(q);
     api(lastSearchURL)
@@ -3695,9 +3761,25 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
     const note = $('search-note');
     note.classList.toggle('hidden', state.semantic);
     if (!state.semantic) note.textContent = 'Semantic search is off on this server (no embeddings provider configured); showing direct matches only.';
-    if (state.rows === 'pending') { box.appendChild(searchNote('search-loading', 'Searching…')); return; }
-    if (state.rows.err) { box.appendChild(searchNote('search-empty', 'Search failed: ' + state.rows.err)); return; }
-    if (!state.rows.length) { box.appendChild(searchNote('search-empty', hasFilters() ? 'No matches with these filters.' : 'No matches.')); return; }
+    const channelHits = state.channels || [];
+    if (channelHits.length) {
+      box.appendChild(searchSectionLabel('Channels'));
+      channelHits.forEach((ch) => box.appendChild(searchChannelRow(ch)));
+    }
+    if (state.rows === 'pending') {
+      if (channelHits.length) box.appendChild(searchSectionLabel('Messages'));
+      box.appendChild(searchNote('search-loading', 'Searching…'));
+      return;
+    }
+    if (state.rows.err) {
+      box.appendChild(searchNote('search-empty', 'Message search failed: ' + state.rows.err));
+      return;
+    }
+    if (!state.rows.length) {
+      if (!channelHits.length) box.appendChild(searchNote('search-empty', hasFilters() ? 'No matches with these filters.' : 'No matches.'));
+      return;
+    }
+    if (channelHits.length) box.appendChild(searchSectionLabel('Messages'));
     const shown = state.expanded ? state.rows : state.rows.slice(0, SEARCH_PREVIEW_ROWS);
     shown.forEach((r) => box.appendChild(searchHitRow(r)));
     if (state.rows.length <= shown.length) return;
@@ -3727,6 +3809,7 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
     meta.innerHTML = `<span class="sh-author">${esc(r.author_name)}</span>` +
       messageTimeHTML(r.created_at, 'sh-time') +
       `<span class="sh-channel">#${esc(ch ? ch.name : 'channel')}</span>` +
+      (ch && ch.archived ? '<span class="archived-mark">archived</span>' : '') +
       (r.thread_root_id ? '<span class="sh-thread">in thread</span>' : '') +
       (r.via === 'semantic' ? '<span class="sh-via" title="matched by meaning, not by these words">semantic</span>' : '');
     const snip = document.createElement('div');
@@ -3813,7 +3896,7 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
     }
     if (which === 'in') {
       // one channel at a time: picking one unticks the rest
-      channels.slice().sort((a, b) => a.name.localeCompare(b.name)).forEach((c) => pop.appendChild(popOption('#' + c.name, f.channel === c.id, (on, cb) => {
+      channels.slice().sort((a, b) => a.name.localeCompare(b.name)).forEach((c) => pop.appendChild(popOption('#' + c.name + (c.archived ? ' · archived' : ''), f.channel === c.id, (on, cb) => {
         f.channel = on ? c.id : null;
         pop.querySelectorAll('input').forEach((i) => { if (i !== cb) i.checked = false; });
       })));
@@ -4147,9 +4230,9 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
     } catch (e) { failToast(e, { prefix: 'Could not make #' + ch.name + ' private' }); }
   };
 
-  // Browse view: the whole public channel map. Channels you are already in are
-  // grayed with a note instead of a Join button, so the list stays a complete
-  // picture of the workspace instead of only the gaps.
+  // Browse view: the whole public channel map. Archived channels live in their
+  // own section below active ones. Existing members can open archived history;
+  // non-members can discover it without weakening the membership content gate.
   const renderBrowse = (list) => {
     const box = $('browse-list');
     box.innerHTML = '';
@@ -4157,12 +4240,14 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
       box.innerHTML = '<p class="browse-empty">No public channels to browse.</p>';
       return;
     }
-    list.forEach((ch) => {
+    const appendRow = (section, ch) => {
       const row = document.createElement('div');
-      row.className = 'browse-row' + (ch.member ? ' member' : '');
+      row.className = 'browse-row' + (ch.member ? ' member' : '') + (ch.archived ? ' archived' : '');
+      row.dataset.channelId = ch.id;
       const n = ch.member_count || 0;
       row.innerHTML = `<div class="browse-meta">
-          <span class="browse-name">${ch.private ? ICON.lock : ICON.hash}${esc(ch.name)}</span>
+          <span class="browse-title"><span class="browse-name">${ch.private ? ICON.lock : ICON.hash}${esc(ch.name)}</span>` +
+          (ch.archived ? '<span class="archived-mark">archived</span>' : '') + `</span>
           <span class="browse-topic">${esc(ch.topic || '')}</span>
           <span class="browse-count">${n} member${n === 1 ? '' : 's'}</span>
         </div>`;
@@ -4170,12 +4255,35 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
       const action = document.createElement('span');
       action.className = 'browse-action';
       row.appendChild(action);
+      if (ch.archived && ch.member) {
+        const open = document.createElement('button');
+        open.type = 'button';
+        open.className = 'browse-open btn-sm';
+        open.textContent = 'Open';
+        open.onclick = async () => {
+          const mine = channels.find((c) => c.id === ch.id);
+          if (!mine) return;
+          closeBrowse();
+          await selectChannel(mine);
+        };
+        action.appendChild(open);
+        section.appendChild(row);
+        return;
+      }
       if (ch.member) {
         const note = document.createElement('span');
         note.className = 'browse-member-note';
         note.textContent = 'already a member';
         action.appendChild(note);
-        box.appendChild(row);
+        section.appendChild(row);
+        return;
+      }
+      if (ch.archived) {
+        const note = document.createElement('span');
+        note.className = 'browse-member-note';
+        note.textContent = 'not a member';
+        action.appendChild(note);
+        section.appendChild(row);
         return;
       }
       const join = document.createElement('button');
@@ -4193,7 +4301,23 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
         } catch (e) { failToast(e, { prefix: 'Could not join #' + ch.name }); join.disabled = false; }
       };
       action.appendChild(join);
-      box.appendChild(row);
+      section.appendChild(row);
+    };
+    const sections = [
+      ['active', 'Active channels', list.filter((ch) => !ch.archived)],
+      ['archived', 'Archived channels', list.filter((ch) => ch.archived)],
+    ];
+    sections.forEach(([kind, label, rows]) => {
+      if (!rows.length) return;
+      const section = document.createElement('section');
+      section.className = 'browse-section';
+      section.dataset.kind = kind;
+      const title = document.createElement('h4');
+      title.className = 'browse-section-title';
+      title.textContent = label;
+      section.appendChild(title);
+      rows.forEach((ch) => appendRow(section, ch));
+      box.appendChild(section);
     });
   };
 

@@ -17,8 +17,9 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request, p mo
 	writeJSON(w, http.StatusOK, map[string]any{"channels": list})
 }
 
-// handleBrowseChannels lists the public channels the caller can join but has
-// not joined yet, with a live member count for each.
+// handleBrowseChannels lists the complete public channel map, including
+// archived channels and channels the caller already belongs to, with a live
+// member count and membership flag for each.
 func (s *Server) handleBrowseChannels(w http.ResponseWriter, r *http.Request, p models.Participant) {
 	list, err := s.store.BrowsableChannels(r.Context(), p.RoomID, p.ID)
 	if err != nil {
