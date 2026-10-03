@@ -359,7 +359,11 @@ unknown_mentions() {
 import sys, json, re, os
 body = sys.stdin.read()
 try:
-    known = {m["handle"] for m in json.load(open(sys.argv[1]))["members"]}
+    base = os.path.realpath(sys.argv[2])
+    path = os.path.realpath(sys.argv[1])
+    if os.path.commonpath([path, base]) != base:
+        sys.exit(0)
+    known = {m["handle"] for m in json.load(open(path))["members"]}
 except Exception:
     sys.exit(0)
 body = re.sub(r"(?s)```.*?```", " ", body)
@@ -373,7 +377,7 @@ for m in re.finditer(r"(^|[^\w@])@([A-Za-z0-9][A-Za-z0-9_-]*)", body):
         continue
     bad.append(h)
 print(" ".join(bad))
-' "$2"
+' "$2" "$(state_dir)"
   return 0
 }
 
