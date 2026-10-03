@@ -219,10 +219,10 @@ func (s *Store) ListChannelsUnread(ctx context.Context, roomID, participantID st
 	return out, rows.Err()
 }
 
-// BrowsableChannels lists every non-archived public channel in the room — the
-// complete public map — with a live member count and a member flag for the
-// channels the caller is already in. Private channels are invite-only and
-// never appear here. Sorted by name so the browse list reads alphabetically.
+// BrowsableChannels lists every public channel in the room, including archived
+// ones, with a live member count and a member flag for the channels the caller
+// is already in. Private channels are invite-only and never appear here. Active
+// channels sort first, then each section reads alphabetically.
 func (s *Store) BrowsableChannels(ctx context.Context, roomID, participantID string) ([]Channel, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT c.id, c.room_id, c.name, c.topic, c.created_by, c.archived, c.private, c.created_at,
@@ -230,8 +230,8 @@ func (s *Store) BrowsableChannels(ctx context.Context, roomID, participantID str
 		        EXISTS (SELECT 1 FROM channel_members cm
 		                WHERE cm.channel_id = c.id AND cm.participant_id = $2) AS member
 		 FROM channels c
-		 WHERE c.room_id = $1 AND NOT c.archived AND NOT c.private
-		 ORDER BY c.name ASC`, roomID, participantID)
+		 WHERE c.room_id = $1 AND NOT c.private
+		 ORDER BY c.archived ASC, c.name ASC`, roomID, participantID)
 	if err != nil {
 		return nil, err
 	}

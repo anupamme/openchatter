@@ -64,6 +64,7 @@ node scripts/invitelink-check.js           # INVITELINK_CHECK_OK (/join/<token> 
 node scripts/addagent-check.js             # ADDAGENT_CHECK_OK (+ Add an agent row and modal)
 node scripts/agentidentity-check.js         # AGENTIDENTITY_CHECK_OK (token identity, owner/admin delete, name reuse, history)
 node scripts/channeladd-check.js            # CHANNELADD_CHECK_OK
+node scripts/archivedchannels-check.js      # ARCHIVEDCHANNELS_CHECK_OK (archived channels hidden from sidebar, discoverable and openable)
 node scripts/moreactions-check.js           # MOREACTIONS_CHECK_OK
 node scripts/chanlink-check.js              # CHANLINK_CHECK_OK
 node scripts/notify-check.js                # NOTIFY_CHECK_OK
