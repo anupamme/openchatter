@@ -41,11 +41,28 @@ const openBrowseChannel = (page, name) => page.evaluate((wanted) => {
   const alice = await api('/api/v1/rooms/join', {
     method: 'POST', body: { invite_code: created.invite_code, name: 'alice', is_human: true },
   });
+  const made = {};
   for (const [name, body] of [['byoa', 'saved BYOA history'], ['slack', 'saved Slack history']]) {
-    await api('/api/v1/channels', { method: 'POST', token: alice.token, body: { name, topic: 'archived test' } });
+    made[name] = await api('/api/v1/channels', { method: 'POST', token: alice.token, body: { name, topic: 'archived test' } });
     await api('/api/v1/channels/' + name + '/messages', { method: 'POST', token: alice.token, body: { body } });
     await api('/api/v1/channels/' + name, { method: 'PATCH', token: alice.token, body: { archived: true } });
   }
+  for (const name of ['active-one', 'active-two', 'moved']) {
+    made[name] = await api('/api/v1/channels', { method: 'POST', token: alice.token, body: { name, topic: 'ordering test' } });
+  }
+  const allChannels = (await api('/api/v1/channels', { token: alice.token })).channels;
+  made.general = allChannels.find((ch) => ch.name === 'general');
+  const holding = await api('/api/v1/channel-groups', {
+    method: 'POST', token: alice.token, body: { name: 'Holding' },
+  });
+  for (const [position, name] of ['byoa', 'active-one', 'active-two', 'slack', 'general', 'moved'].entries()) {
+    await api('/api/v1/channels/' + made[name].id + '/group', {
+      method: 'PUT', token: alice.token, body: { group_id: null, position },
+    });
+  }
+  await api('/api/v1/channels/' + made.moved.id + '/group', {
+    method: 'PUT', token: alice.token, body: { group_id: holding.id, position: 0 },
+  });
 
   const browser = await launchBrowser();
   const page = await browser.newPage();
@@ -57,6 +74,30 @@ const openBrowseChannel = (page, name) => page.evaluate((wanted) => {
   // 1. Neither archived member channel is an active navigation leaf.
   let names = await sidebarNames(page);
   assert(!names.includes('byoa') && !names.includes('slack'), 'archived channel leaked into sidebar: ' + JSON.stringify(names));
+
+  // Header-drop append uses the complete stored default order, including its
+  // hidden archived ids. With a visible-count index, #moved lands above a
+  // visible channel instead of at the end after [archived, active, active].
+  await page.evaluate(() => {
+    const source = [...document.querySelectorAll('#channel-list li[data-chid]')]
+      .find((el) => el.querySelector('.chan-name')?.textContent === 'moved');
+    const target = document.querySelector('#channel-list .default-section');
+    if (!source || !target) throw new Error('ordering regression fixture did not render');
+    const transfer = new DataTransfer();
+    source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: transfer }));
+    target.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: transfer }));
+    target.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: transfer }));
+    source.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: transfer }));
+  });
+  let ordered;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    ordered = (await api('/api/v1/channel-groups', { token: alice.token })).ungrouped;
+    if (ordered.at(-1) === made.moved.id) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert(ordered.at(-1) === made.moved.id, 'default header drop did not append after archived ids: ' + JSON.stringify(ordered));
+  names = await sidebarNames(page);
+  assert(names.at(-1) === 'moved', 'default header drop did not append visibly: ' + JSON.stringify(names));
 
   // 2. Browse puts the archived channels in their own section below active
   // channels. Both rows are marked and, because alice is a member, openable.

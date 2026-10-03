@@ -1202,7 +1202,11 @@ import { sessionToken, isAccountPage, loginURL, onSessionInvalid, backTarget, fe
       }
     }
     head0.onclick = () => toggleDefaultSection();
-    makeDropZone(head0, null, () => members0.length);
+    // The persisted default order still contains archived channels. A header
+    // drop means "append" to that full order, not merely after its visible
+    // rows, otherwise an archived id shifts the dropped row above a visible
+    // channel on the next render.
+    makeDropZone(head0, null, () => defaultMembers().length);
     ul.appendChild(head0);
     if (!defaultCollapsed) members0.forEach((ch) => appendChannel(ul, ch, null));
 
