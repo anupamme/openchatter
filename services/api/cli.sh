@@ -245,15 +245,81 @@ api() {
   fail_status "$2"
 }
 
-# json_str JSON EXPR — evaluate a python expression over the parsed body `d`
+# json_str JSON EXPR — safely resolve a tiny, whitelisted expression grammar
+# (dict/list literals, subscripting, boolean/ternary logic, %-formatting and
+# .get()/.join()/len() calls) over the parsed body `d`. The expression's AST
+# is walked by hand (no dynamic code execution of any kind) so arbitrary code
+# can never run even if `d` or the expression string were attacker-influenced.
 json_str() {
   printf '%s' "$1" | python3 -c '
-import sys, json
+import sys, json, ast
+
+def _ev(node, env):
+    if isinstance(node, ast.Expression):
+        return _ev(node.body, env)
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        if node.id in env:
+            return env[node.id]
+        raise ValueError("name not allowed")
+    if isinstance(node, ast.Tuple):
+        return tuple(_ev(e, env) for e in node.elts)
+    if isinstance(node, ast.List):
+        return [_ev(e, env) for e in node.elts]
+    if isinstance(node, ast.Subscript):
+        val = _ev(node.value, env)
+        sl = node.slice
+        if isinstance(sl, ast.Index):
+            sl = sl.value
+        return val[_ev(sl, env)]
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        return not _ev(node.operand, env)
+    if isinstance(node, ast.BoolOp):
+        vals = [_ev(v, env) for v in node.values]
+        is_or = isinstance(node.op, ast.Or)
+        for v in vals:
+            if (is_or and v) or (not is_or and not v):
+                return v
+        return vals[-1]
+    if isinstance(node, ast.IfExp):
+        return _ev(node.body, env) if _ev(node.test, env) else _ev(node.orelse, env)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        return _ev(node.left, env) % _ev(node.right, env)
+    if isinstance(node, ast.Compare) and len(node.ops) == 1:
+        l, r, op = _ev(node.left, env), _ev(node.comparators[0], env), node.ops[0]
+        if isinstance(op, ast.Eq):
+            return l == r
+        if isinstance(op, ast.NotEq):
+            return l != r
+        raise ValueError("comparison not allowed")
+    if isinstance(node, ast.Call) and not node.keywords:
+        if isinstance(node.func, ast.Name) and node.func.id == "len":
+            return len(*[_ev(a, env) for a in node.args])
+        if isinstance(node.func, ast.Attribute) and node.func.attr in ("get", "join"):
+            obj = _ev(node.func.value, env)
+            return getattr(obj, node.func.attr)(*[_ev(a, env) for a in node.args])
+        raise ValueError("call not allowed")
+    if isinstance(node, (ast.GeneratorExp, ast.ListComp)) and len(node.generators) == 1:
+        gen = node.generators[0]
+        if gen.ifs or not isinstance(gen.target, ast.Name):
+            raise ValueError("comprehension not allowed")
+        out = []
+        for item in _ev(gen.iter, env):
+            child = dict(env)
+            child[gen.target.id] = item
+            out.append(_ev(node.elt, child))
+        return out
+    raise ValueError("expression not allowed: " + type(node).__name__)
+
 try:
     d = json.load(sys.stdin)
 except Exception:
     sys.exit(0)
-v = eval(sys.argv[1], {"d": d})
+try:
+    v = _ev(ast.parse(sys.argv[1], mode="eval"), {"d": d})
+except Exception:
+    sys.exit(0)
 print("" if v is None else v)
 ' "$2" 2>/dev/null || true
 }
